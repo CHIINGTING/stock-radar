@@ -1,0 +1,47 @@
+refresh_seconds: 3
+
+strategy:
+  buy_score: 80
+  watch_score: 60
+
+positions:
+  - code: "2337"
+    name: "旺宏"
+    entry: 171.5
+    shares: 1000
+
+watchlist:
+  - code: "1582"
+    name: "信錦"
+  - code: "3048"
+    name: "益登"
+  - code: "2401"
+    name: "凌陽"
+  - code: "5483"
+    name: "中美晶"
+  - code: "2409"
+    name: "友達"
+  - code: "2408"
+    name: "南亞科"
+  - code: "2356"
+    name: "英業達"
+  - code: "2374"
+    name: "佳能"
+  - code: "2337"
+    name: "旺宏"
+  - code: "2303"
+    name: "聯電"
+  - code: "2344"
+    name: "華邦電"
+  - code: "1504"
+    name: "東元"
+  - code: "2419"
+    name: "仲奇"
+  - code: "3015"
+    name: "全漢"
+  - code: "4532"
+    name: "瑞智"
+  - code: "3013"
+    name: "晟銘電"
+  - code: "2328"
+    name: "廣宇"

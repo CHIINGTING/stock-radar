@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>Stock Radar</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="app-header">
+    <h1>Stock Radar</h1>
+    <div class="header-right">
+        <button class="btn-refresh" onclick="refresh()">重新整理</button>
+        <span id="lastUpdate"></span>
+    </div>
+</header>
+
+<nav class="tab-bar">
+    <button id="tab-scanner"   class="tab active"  onclick="switchTab('scanner')">掃描器</button>
+    <button id="tab-watchlist" class="tab"          onclick="switchTab('watchlist')">自選股</button>
+    <button id="tab-portfolio" class="tab"          onclick="switchTab('portfolio')">持倉管理</button>
+</nav>
+
+<!-- ── Market Scanner ── -->
+<div id="panel-scanner" class="panel">
+    <div class="panel-hint">按技術評分排序，量比 ≥ 2 標示大單</div>
+    <table>
+        <thead>
+        <tr>
+            <th>代號</th><th>名稱</th><th>現價</th><th>漲跌%</th>
+            <th>評分</th><th>量比</th><th>量價型態</th><th>大單</th><th>買賣比</th><th>建議</th>
+        </tr>
+        </thead>
+        <tbody id="scannerTable"></tbody>
+    </table>
+</div>
+
+<!-- ── Watchlist ── -->
+<div id="panel-watchlist" class="panel" style="display:none">
+    <table>
+        <thead>
+        <tr>
+            <th>代號</th><th>名稱</th><th>價格</th><th>漲跌</th>
+            <th>MA5</th><th>MA20</th><th>RSI14</th><th>分數</th><th>建議</th>
+        </tr>
+        </thead>
+        <tbody id="watchlistTable"></tbody>
+    </table>
+</div>
+
+<!-- ── Portfolio ── -->
+<div id="panel-portfolio" class="panel" style="display:none">
+    <div id="portfolioCards" class="portfolio-grid"></div>
+</div>
+
+<!-- ── Detail drawer ── -->
+<section id="detail">
+    <h2>分析詳情</h2>
+    <div id="detailContent"><p class="placeholder">點選股票查看完整技術分析</p></div>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>
