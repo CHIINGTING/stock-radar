@@ -2,11 +2,24 @@ package market
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 )
+
+// errSymbolNotFound means Yahoo gave a definitive "this symbol does not exist on
+// this market" answer (HTTP 404 or an empty/error chart result). Only this error
+// justifies probing the other market (TW → TWO). Transient failures such as 429
+// rate-limiting or timeouts are returned as ordinary errors and must NOT trigger
+// a market switch.
+var errSymbolNotFound = errors.New("symbol not found")
+
+// rawTTL is how long fetched 1-minute bars are reused before re-hitting Yahoo.
+// The live tail is re-merged from the MIS quote on every call, so freshness does
+// not depend on this — it only throttles the (rate-limited) Yahoo endpoint.
+const rawTTL = 45 * time.Second
 
 // twLoc is the Taiwan trading timezone (UTC+8). Defined as a fixed zone so the
 // binary does not depend on the host tzdata being present.
@@ -29,30 +42,36 @@ type IntradaySet struct {
 }
 
 // IntradayProvider fetches and aggregates intraday candles for a stock.
-// market is "TW" / "TWO" / "" (auto-detect), matching HistoryProvider.
+//
+// market is "TW" / "TWO" / "" (auto-detect), matching HistoryProvider. live is
+// the caller's current realtime quote (already cached upstream) used to extend
+// the most recent minute; pass nil to get Yahoo-only bars.
 type IntradayProvider interface {
-	GetBars(code, market string) (IntradaySet, error)
+	GetBars(code, market string, live *Quote) (IntradaySet, error)
 }
 
 // YahooIntradayProvider builds intraday bars from two sources:
 //
 //   - Historical 1-minute candles from Yahoo (interval=1m&range=1d), covering the
-//     session up to roughly one minute ago.
-//   - A live "tail" bar synthesised from the TWSE MIS realtime quote, so the most
-//     recent minute reflects the current price instead of lagging Yahoo.
+//     session up to roughly one minute ago. These are cached for rawTTL to avoid
+//     hammering Yahoo's rate-limited endpoint.
+//   - A live "tail" bar synthesised from the caller-supplied MIS quote, re-merged
+//     on every call so the most recent minute reflects the current price.
 //
-// The two are merged on the minute timestamp (MIS overrides Yahoo for the same
-// minute, otherwise appends), then aggregated to 3m / 5m / 15m.
+// The two are merged on the minute timestamp (the live quote overrides Yahoo for
+// the same minute, otherwise appends), then aggregated to 3m / 5m / 15m.
 type YahooIntradayProvider struct {
-	// Realtime supplies the live tail bar. If nil or it errors, the set is
-	// built from Yahoo data alone and marked Closed.
-	Realtime RealtimeProvider
-
 	mu         sync.Mutex
-	discovered map[string]string // code → "TW" | "TWO"
+	discovered map[string]string    // code → "TW" | "TWO"
+	raw        map[string]rawEntry  // code → cached 1m bars
 }
 
-func (p *YahooIntradayProvider) GetBars(code, market string) (IntradaySet, error) {
+type rawEntry struct {
+	bars    []Candle
+	fetched time.Time
+}
+
+func (p *YahooIntradayProvider) GetBars(code, market string, live *Quote) (IntradaySet, error) {
 	bars1m, err := p.fetch1m(code, market)
 	if err != nil {
 		return IntradaySet{}, err
@@ -62,11 +81,9 @@ func (p *YahooIntradayProvider) GetBars(code, market string) (IntradaySet, error
 	}
 
 	closed := true
-	if p.Realtime != nil && marketOpenNow() {
-		if q, qErr := p.Realtime.GetQuote(code); qErr == nil && q.Price > 0 {
-			bars1m = mergeLiveTail(bars1m, q)
-			closed = false
-		}
+	if live != nil && live.Price > 0 && marketOpenNow() {
+		bars1m = mergeLiveTail(bars1m, live)
+		closed = false
 	}
 
 	return IntradaySet{
@@ -77,38 +94,74 @@ func (p *YahooIntradayProvider) GetBars(code, market string) (IntradaySet, error
 	}, nil
 }
 
-// fetch1m retrieves the day's 1-minute candles, honouring the configured market
-// suffix and caching auto-detected suffixes (TW → TWO probe).
+// fetch1m returns the day's 1-minute candles, served from the rawTTL cache when
+// fresh. It honours the configured market suffix and, when auto-detecting, only
+// probes TWO if TW returns a definitive "not found" — never on transient errors.
 func (p *YahooIntradayProvider) fetch1m(code, market string) ([]Candle, error) {
-	if market != "" {
-		return p.fetchSymbol1m(YahooSymbol(code, market))
-	}
-
+	// Serve cached raw bars if still fresh.
 	p.mu.Lock()
+	if p.raw == nil {
+		p.raw = make(map[string]rawEntry)
+	}
+	if e, ok := p.raw[code]; ok && time.Since(e.fetched) < rawTTL {
+		bars := e.bars
+		p.mu.Unlock()
+		return bars, nil
+	}
 	if p.discovered == nil {
 		p.discovered = make(map[string]string)
 	}
 	cached := p.discovered[code]
 	p.mu.Unlock()
 
-	if cached != "" {
-		return p.fetchSymbol1m(YahooSymbol(code, cached))
+	bars, err := p.fetchResolved(code, market, cached)
+	if err != nil {
+		return nil, err
 	}
 
-	if c, err := p.fetchSymbol1m(YahooSymbol(code, "TW")); err == nil && len(c) > 0 {
-		p.mu.Lock()
-		p.discovered[code] = "TW"
-		p.mu.Unlock()
+	p.mu.Lock()
+	p.raw[code] = rawEntry{bars: bars, fetched: time.Now()}
+	p.mu.Unlock()
+	return bars, nil
+}
+
+// fetchResolved performs the actual Yahoo fetch, resolving the market suffix.
+func (p *YahooIntradayProvider) fetchResolved(code, market, discovered string) ([]Candle, error) {
+	// Explicit market from config — never probe the other one.
+	if market != "" {
+		return p.fetchSymbol1m(YahooSymbol(code, market))
+	}
+	// Previously auto-detected — reuse it.
+	if discovered != "" {
+		return p.fetchSymbol1m(YahooSymbol(code, discovered))
+	}
+
+	// Auto-detect: try TSE first.
+	c, err := p.fetchSymbol1m(YahooSymbol(code, "TW"))
+	if err == nil && len(c) > 0 {
+		p.remember(code, "TW")
 		return c, nil
 	}
-
-	c, err := p.fetchSymbol1m(YahooSymbol(code, "TWO"))
-	if err == nil && len(c) > 0 {
-		p.mu.Lock()
-		p.discovered[code] = "TWO"
-		p.mu.Unlock()
+	// Only fall through to TPEX when TW genuinely has no such symbol.
+	// Transient failures (429 rate-limit, timeout, 5xx) keep TW and retry later.
+	if !errors.Is(err, errSymbolNotFound) {
+		return nil, err
 	}
-	return c, err
+
+	c2, err2 := p.fetchSymbol1m(YahooSymbol(code, "TWO"))
+	if err2 == nil && len(c2) > 0 {
+		p.remember(code, "TWO")
+	}
+	return c2, err2
+}
+
+func (p *YahooIntradayProvider) remember(code, market string) {
+	p.mu.Lock()
+	if p.discovered == nil {
+		p.discovered = make(map[string]string)
+	}
+	p.discovered[code] = market
+	p.mu.Unlock()
 }
 
 func (p *YahooIntradayProvider) fetchSymbol1m(symbol string) ([]Candle, error) {
@@ -132,7 +185,12 @@ func (p *YahooIntradayProvider) fetchSymbol1m(symbol string) ([]Candle, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		// Definitive: this symbol does not exist on this market.
+		return nil, fmt.Errorf("%s: %w", symbol, errSymbolNotFound)
+	case resp.StatusCode != http.StatusOK:
+		// Transient (429 rate-limit, 5xx, …) — retryable, do not switch market.
 		return nil, fmt.Errorf("yahoo returned %d for %s", resp.StatusCode, symbol)
 	}
 
@@ -141,7 +199,8 @@ func (p *YahooIntradayProvider) fetchSymbol1m(symbol string) ([]Candle, error) {
 		return nil, fmt.Errorf("decode %s: %w", symbol, err)
 	}
 	if len(result.Chart.Result) == 0 {
-		return nil, fmt.Errorf("no chart data for %s", symbol)
+		// Valid response, no data → treat as "not found on this market".
+		return nil, fmt.Errorf("%s: %w", symbol, errSymbolNotFound)
 	}
 
 	r := result.Chart.Result[0]

@@ -3,12 +3,19 @@ package market
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// errStockNotOnMarket means the queried market (tse/otc) returned a valid response
+// saying this code does not trade there. Only this error justifies falling back to
+// the other market. Transient failures (EOF, timeout, decode) must NOT switch
+// market — they are retried on the same market next cycle.
+var errStockNotOnMarket = errors.New("stock not on market")
 
 // TWSEProvider fetches realtime quotes from the TWSE MIS API.
 // Set MarketHints to map stock codes to their known MIS market string ("tse" or "otc")
@@ -41,9 +48,15 @@ func (p *TWSEProvider) GetQuote(code string) (*Quote, error) {
 	if hint, ok := p.MarketHints[code]; ok {
 		return p.getMIS(code, hint)
 	}
-	// Auto-detect: TSE first, then OTC/TPEX.
-	if q, err := p.getMIS(code, "tse"); err == nil {
+	// Auto-detect: TSE first. Only fall through to OTC/TPEX when TSE gives a
+	// definitive "not on this market" answer — never on transient errors (EOF,
+	// timeout), which would otherwise mask the real cause and double the load.
+	q, err := p.getMIS(code, "tse")
+	if err == nil {
 		return q, nil
+	}
+	if !errors.Is(err, errStockNotOnMarket) {
+		return nil, err
 	}
 	return p.getMIS(code, "otc")
 }
@@ -81,7 +94,7 @@ func (p *TWSEProvider) getMIS(code, market string) (*Quote, error) {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
 	if len(result.MsgArray) == 0 {
-		return nil, fmt.Errorf("stock %s not found on %s", code, market)
+		return nil, fmt.Errorf("stock %s not on %s: %w", code, market, errStockNotOnMarket)
 	}
 
 	s := result.MsgArray[0]
@@ -90,7 +103,7 @@ func (p *TWSEProvider) getMIS(code, market string) (*Quote, error) {
 	// stock does not trade on the queried market.  Treat that as "not found" so the
 	// caller can fall through to the correct market.
 	if strings.TrimSpace(s.Code) == "" {
-		return nil, fmt.Errorf("stock %s not found on %s (empty entry)", code, market)
+		return nil, fmt.Errorf("stock %s not on %s (empty entry): %w", code, market, errStockNotOnMarket)
 	}
 
 	refPrice, _ := strconv.ParseFloat(strings.TrimSpace(s.RefPrice), 64)

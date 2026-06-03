@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	historyTTL  = 4 * time.Hour
-	intradayTTL = 20 * time.Second
+	historyTTL = 4 * time.Hour
 
 	// pollInterval is the minimum gap between background quote refreshes that
 	// feed the order-flow recorder. A full refresh already takes several seconds
@@ -42,9 +41,10 @@ type Handler struct {
 	histData map[string][]market.Candle
 	histTime map[string]time.Time
 
+	// intraData holds the last good intraday set per code, returned as a fallback
+	// when a fetch transiently fails.
 	intraMu   sync.RWMutex
 	intraData map[string]market.IntradaySet
-	intraTime map[string]time.Time
 }
 
 // NewHandler pre-loads the realtime quote cache synchronously so that the first
@@ -73,14 +73,13 @@ func NewHandler(cfg *config.Config) *Handler {
 		cfg:       cfg,
 		realtime:  realtime,
 		history:   &market.YahooHistoryProvider{},
-		intraday:  &market.YahooIntradayProvider{Realtime: realtime},
+		intraday:  &market.YahooIntradayProvider{},
 		cache:     market.NewCache(),
 		flow:      orderflow.NewRecorder(),
 		markets:   markets,
 		histData:  make(map[string][]market.Candle),
 		histTime:  make(map[string]time.Time),
 		intraData: make(map[string]market.IntradaySet),
-		intraTime: make(map[string]time.Time),
 	}
 	h.cache.Refresh(h.codes(), h.realtime)
 	h.recordFlow() // seed the first order-flow sample
@@ -109,17 +108,11 @@ func (h *Handler) recordFlow() {
 	}
 }
 
-// getIntraday returns cached intraday bars or fetches them if missing / stale.
-func (h *Handler) getIntraday(code string) (market.IntradaySet, bool) {
-	h.intraMu.RLock()
-	if t, ok := h.intraTime[code]; ok && time.Since(t) < intradayTTL {
-		set := h.intraData[code]
-		h.intraMu.RUnlock()
-		return set, true
-	}
-	h.intraMu.RUnlock()
-
-	set, err := h.intraday.GetBars(code, h.markets[code])
+// getIntraday fetches intraday bars for code, merging the supplied live quote as
+// the latest minute. The provider throttles the Yahoo endpoint internally; on a
+// transient fetch error this returns the last good set so the UI keeps rendering.
+func (h *Handler) getIntraday(code string, live *market.Quote) (market.IntradaySet, bool) {
+	set, err := h.intraday.GetBars(code, h.markets[code], live)
 	if err != nil {
 		log.Printf("intraday code=%s err=%v", code, err)
 		h.intraMu.RLock()
@@ -130,7 +123,6 @@ func (h *Handler) getIntraday(code string) (market.IntradaySet, bool) {
 
 	h.intraMu.Lock()
 	h.intraData[code] = set
-	h.intraTime[code] = time.Now()
 	h.intraMu.Unlock()
 	return set, true
 }
@@ -580,7 +572,7 @@ func (h *Handler) ListRadar(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		set, ok := h.getIntraday(s.Code)
+		set, ok := h.getIntraday(s.Code, quote)
 		if !ok {
 			continue
 		}
