@@ -19,10 +19,16 @@ func main() {
 	}
 
 	h := api.NewHandler(cfg)
+	h.StartPolling()
 
 	http.HandleFunc(
 		"/api/stocks",
 		h.ListStocks,
+	)
+
+	http.HandleFunc(
+		"/api/radar",
+		h.ListRadar,
 	)
 
 	http.HandleFunc(
@@ -33,6 +39,11 @@ func main() {
 	http.HandleFunc(
 		"/api/positions",
 		h.ListPositions,
+	)
+
+	http.HandleFunc(
+		"/api/scanner",
+		h.ListScanner,
 	)
 
 	fs := http.FileServer(

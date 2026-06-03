@@ -4,12 +4,30 @@ strategy:
   buy_score: 80
   watch_score: 60
 
+# 欄位說明：
+#   market:     "TW" = 上市 / "TWO" = 上櫃 / 不填 = 自動偵測
+#   warn:       "處置股" 或 "注意股"（不填 = 正常）
+#   warn_start: YYYY-MM-DD（處置/注意開始日）
+#   warn_end:   YYYY-MM-DD（預計解除日，用於倒數顯示）
+#
+# 範例（處置股）：
+#   - code: "XXXX"
+#     warn: "處置股"
+#     warn_start: "2026-05-28"
+#     warn_end: "2026-06-10"
 positions:
   - code: "2337"
     name: "旺宏"
+    market: "TW"
     entry: 171.5
     shares: 1000
+  - code: "2344"
+    name: "華邦電"
+    market: "TW"
+    entry: 184.5
+    shares: 1000
 
+# 自選觀察股
 watchlist:
   - code: "1582"
     name: "信錦"
@@ -19,6 +37,13 @@ watchlist:
     name: "凌陽"
   - code: "5483"
     name: "中美晶"
+    market: "TWO"         # TPEX 上櫃
+  - code: "8299"
+    name: "群聯"
+    market: "TWO"         # TPEX 上櫃
+  - code: "3264"
+    name: "欣銓"
+    market: "TWO"         # TPEX 上櫃
   - code: "2409"
     name: "友達"
   - code: "2408"
@@ -45,3 +70,9 @@ watchlist:
     name: "晟銘電"
   - code: "2328"
     name: "廣宇"
+  - code: "2379"
+    name: "瑞昱"
+  - code: "3060"
+    name: "異銘"
+  - code: "2009"
+    name: "第一銅"

@@ -17,8 +17,12 @@ type Config struct {
 }
 
 type StockConfig struct {
-	Code string `yaml:"code" json:"code"`
-	Name string `yaml:"name" json:"name"`
+	Code      string `yaml:"code"       json:"code"`
+	Name      string `yaml:"name"       json:"name"`
+	Market    string `yaml:"market"     json:"market"`     // "TW" (上市) or "TWO" (上櫃); empty = auto-detect
+	Warn      string `yaml:"warn"       json:"warn"`       // "處置股" / "注意股"
+	WarnStart string `yaml:"warn_start" json:"warn_start"` // YYYY-MM-DD
+	WarnEnd   string `yaml:"warn_end"   json:"warn_end"`   // YYYY-MM-DD
 }
 
 type PositionConfig struct {
@@ -26,6 +30,7 @@ type PositionConfig struct {
 	Name   string  `yaml:"name"   json:"name"`
 	Entry  float64 `yaml:"entry"  json:"entry"`
 	Shares int     `yaml:"shares" json:"shares"`
+	Market string  `yaml:"market" json:"market"` // "TW" (上市) or "TWO" (上櫃); empty = auto-detect
 }
 
 func Load(path string) (*Config, error) {

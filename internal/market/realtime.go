@@ -11,8 +11,11 @@ import (
 )
 
 // TWSEProvider fetches realtime quotes from the TWSE MIS API.
-// It tries the TSE (上市) market first, then falls back to OTC/TPEX (上櫃).
-type TWSEProvider struct{}
+// Set MarketHints to map stock codes to their known MIS market string ("tse" or "otc")
+// to skip the automatic TSE→OTC fallback for known stocks.
+type TWSEProvider struct {
+	MarketHints map[string]string // code → "tse" | "otc"
+}
 
 type misResponse struct {
 	MsgArray []struct {
@@ -35,6 +38,10 @@ type misResponse struct {
 }
 
 func (p *TWSEProvider) GetQuote(code string) (*Quote, error) {
+	if hint, ok := p.MarketHints[code]; ok {
+		return p.getMIS(code, hint)
+	}
+	// Auto-detect: TSE first, then OTC/TPEX.
 	if q, err := p.getMIS(code, "tse"); err == nil {
 		return q, nil
 	}
@@ -78,6 +85,13 @@ func (p *TWSEProvider) getMIS(code, market string) (*Quote, error) {
 	}
 
 	s := result.MsgArray[0]
+
+	// The TWSE MIS API returns a placeholder entry (empty code, price "-") when a
+	// stock does not trade on the queried market.  Treat that as "not found" so the
+	// caller can fall through to the correct market.
+	if strings.TrimSpace(s.Code) == "" {
+		return nil, fmt.Errorf("stock %s not found on %s (empty entry)", code, market)
+	}
 
 	refPrice, _ := strconv.ParseFloat(strings.TrimSpace(s.RefPrice), 64)
 

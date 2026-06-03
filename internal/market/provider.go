@@ -6,6 +6,8 @@ type RealtimeProvider interface {
 }
 
 // HistoryProvider fetches historical daily candle data.
+// market is "TW" (TSE/上市) or "TWO" (TPEX/上櫃).
+// Pass an empty string to trigger auto-detection with result caching.
 type HistoryProvider interface {
-	GetCandles(code string) ([]Candle, error)
+	GetCandles(code, market string) ([]Candle, error)
 }

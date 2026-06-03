@@ -16,27 +16,63 @@
 </header>
 
 <nav class="tab-bar">
-    <button id="tab-scanner"   class="tab active"  onclick="switchTab('scanner')">掃描器</button>
-    <button id="tab-watchlist" class="tab"          onclick="switchTab('watchlist')">自選股</button>
-    <button id="tab-portfolio" class="tab"          onclick="switchTab('portfolio')">持倉管理</button>
+    <button id="tab-radar"     class="tab active" onclick="switchTab('radar')">Radar 當沖</button>
+    <button id="tab-scanner"   class="tab"        onclick="switchTab('scanner')">掃描器</button>
+    <button id="tab-watchlist" class="tab"        onclick="switchTab('watchlist')">自選股</button>
+    <button id="tab-portfolio" class="tab"        onclick="switchTab('portfolio')">持倉管理</button>
 </nav>
 
-<!-- ── Market Scanner ── -->
-<div id="panel-scanner" class="panel">
-    <div class="panel-hint">按技術評分排序，量比 ≥ 2 標示大單</div>
-    <table>
+<!-- ── Radar (intraday day-trading) ── -->
+<div id="panel-radar" class="panel">
+    <div class="panel-hint">
+        當沖 Radar：多時間框（15分方向 · 5分進場 · 3分點火）＋ 委買賣單流。
+        <span style="color:#888">🟢偏多 · 🔴偏空 · 🟡中性 · 🚀突破。BUY 需 15分∧5分∧3分同時成立。</span>
+    </div>
+    <table class="radar-table">
         <thead>
         <tr>
-            <th>代號</th><th>名稱</th><th>現價</th><th>漲跌%</th>
-            <th>評分</th><th>量比</th><th>量價型態</th><th>大單</th><th>買賣比</th><th>建議</th>
+            <th>代號</th><th>名稱</th><th>現價</th>
+            <th>15分<br><small>方向</small></th>
+            <th>5分<br><small>進場</small></th>
+            <th>3分<br><small>點火</small></th>
+            <th>量能 3/5/15</th>
+            <th>買賣單流（近15分）</th>
+            <th>評分</th><th>建議</th>
         </tr>
         </thead>
-        <tbody id="scannerTable"></tbody>
+        <tbody id="radarTable"></tbody>
     </table>
+</div>
+
+<!-- ── Market Scanner ── -->
+<div id="panel-scanner" class="panel" style="display:none">
+    <div class="scanner-layout">
+        <!-- Sector sidebar -->
+        <div id="sectorRanking" class="sector-sidebar"></div>
+
+        <!-- Stock table -->
+        <div class="scanner-main">
+            <div class="panel-hint">
+                波段選股（1～4週），按評分排序。
+                <span style="color:#888">指標：MA60 趨勢 · 突破 · 量能 · 相對強度 · 族群強弱</span>
+            </div>
+            <table>
+                <thead>
+                <tr>
+                    <th>代號</th><th>名稱</th><th>現價</th>
+                    <th>階段</th><th>評分</th>
+                    <th>族群 / 排名</th><th>建議持有</th><th>風險</th><th>建議</th>
+                </tr>
+                </thead>
+                <tbody id="scannerTable"></tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <!-- ── Watchlist ── -->
 <div id="panel-watchlist" class="panel" style="display:none">
+    <div class="panel-hint">即時技術指標（MA5 · MA20 · RSI · KDJ · 量比）</div>
     <table>
         <thead>
         <tr>
@@ -56,7 +92,7 @@
 <!-- ── Detail drawer ── -->
 <section id="detail">
     <h2>分析詳情</h2>
-    <div id="detailContent"><p class="placeholder">點選股票查看完整技術分析</p></div>
+    <div id="detailContent"><p class="placeholder">點選股票查看完整分析</p></div>
 </section>
 
 <script src="/app.js"></script>
