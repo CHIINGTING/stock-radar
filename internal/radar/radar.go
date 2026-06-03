@@ -1,14 +1,26 @@
-// Package radar provides intraday (day-trading) multi-timeframe analysis.
+// Package radar provides intraday momentum analysis for day trading.
 //
-// It answers four questions a day trader actually asks:
+// The model is built around momentum, not a fixed stop price. It targets strong
+// stocks and treats shrinking volume as a profit-taking signal, not a stop-loss:
 //
-//	今天能不能做？  — overall Score / Action
-//	方向對不對？    — 15m trend (the gate)
-//	是不是突破點？  — 3m breakout
-//	主力進場沒？    — order-flow trend + multi-timeframe volume
+//	有量進  →  量縮觀察  →  量縮 + 買盤退 = 出  →  趨勢翻空 = 強制出
 //
-// Three timeframes carry distinct roles: 15m decides direction, 5m finds the
-// entry, 3m confirms ignition. A BUY is only allowed when all three align.
+// Exit is graduated across four levels rather than a single binary stop:
+//
+//	Level 1  Volume Fade                              → TAKE PROFIT ALERT
+//	Level 2  Volume Fade + Buy Flow Weakening         → TAKE PROFIT
+//	Level 3  Level 2 + 5m Break Support               → EXIT
+//	Level 4  15m Trend Bearish                        → FORCE EXIT
+//
+// Radar answers four questions:
+//
+//	可以買嗎？        — CanBuy / Action
+//	現在是回測買點嗎？ — PullbackBuy（Pullback Detection）
+//	動能是否衰退？     — MomentumFading（Volume Fade + Buy Flow Weakening）
+//	是否應立即離場？   — ShouldExit（Level 3+）
+//
+// Three timeframes carry distinct roles: 15m decides direction (the strong-stock
+// gate), 5m finds the entry / pullback / support, 3m confirms ignition.
 package radar
 
 import (
@@ -28,28 +40,45 @@ const (
 	Breakout = "Breakout" // 3m only: volume spike + breaking recent high
 )
 
-// Action labels, ordered from most bullish to most bearish.
+// Momentum state labels.
 const (
-	ActionStrongBuy = "STRONG BUY"
-	ActionBuy       = "BUY"
-	ActionWatch     = "WATCH"
-	ActionWait      = "WAIT"
-	ActionReduce    = "REDUCE"
-	ActionStopLoss  = "STOP LOSS"
+	MomStrong  = "STRONG"  // trend + flow + volume all aligned and rising
+	MomRising  = "RISING"  // trend up, no fade yet
+	MomFading  = "FADING"  // fade signal active (warning)
+	MomDead    = "DEAD"    // exit / force-exit triggered
+	MomNeutral = "NEUTRAL" // no clear momentum
 )
 
-// Scoring weights (sum = 100). These are the day-trading weights: direction and
-// order flow dominate; the 3m breakout is a confirming trigger, not a driver.
+// Action labels. The exit side is graduated: shrinking volume is a profit-taking
+// alert, only a real breakdown / trend reversal forces you out.
 const (
-	wTrend15m   = 30.0 // 15分趨勢
-	wVolTrend   = 25.0 // 單量趨勢（多時間框量能）
-	wBidAsk     = 20.0 // 買賣比
-	wTrend5m    = 15.0 // 5分趨勢
-	wBreakout3m = 10.0 // 3分突破
+	ActionStrongBuy       = "STRONG BUY"
+	ActionBuy             = "BUY"
+	ActionPullbackBuy     = "PULLBACK BUY"      // 回測買點
+	ActionHold            = "HOLD"
+	ActionTakeProfitAlert = "TAKE PROFIT ALERT" // Level 1
+	ActionTakeProfit      = "TAKE PROFIT"       // Level 2
+	ActionExit            = "EXIT"              // Level 3
+	ActionForceExit       = "FORCE EXIT"        // Level 4
+	ActionWait            = "WAIT"
 )
 
-// breakoutVolRatio is the 3m volume multiple required to call ignition.
-const breakoutVolRatio = 2.0
+// Momentum scoring weights (sum = 100). Direction and order flow dominate; the
+// trigger (breakout or pullback reclaim) confirms.
+const (
+	wTrend15m = 30.0 // 15分方向（強勢股閘門）
+	wFlow     = 20.0 // 買盤單流
+	wVolume   = 20.0 // 量能
+	wTrend5m  = 15.0 // 5分動能
+	wTrigger  = 15.0 // 3分突破 或 回測翻揚
+)
+
+const (
+	breakoutVolRatio = 2.0 // 3m volume multiple required to call ignition
+	fadeVolRatio     = 1.0 // 3m volume below this + declining = volume fade
+	pullbackLookback = 6   // 5m bars to scan for a pullback dip
+	exitScoreCap     = 25  // score ceiling once Level 3+ fires
+)
 
 // Config carries the BUY / WATCH score thresholds (from stocks.yaml).
 type Config struct {
@@ -57,7 +86,7 @@ type Config struct {
 	WatchScore int
 }
 
-// RadarSignal is the full intraday verdict for one stock.
+// RadarSignal is the intraday momentum verdict for one stock.
 type RadarSignal struct {
 	Code  string  `json:"code"`
 	Name  string  `json:"name"`
@@ -73,16 +102,30 @@ type RadarSignal struct {
 
 	Flow orderflow.Flow `json:"flow"`
 
+	// Momentum core — the four questions + the graduated exit ladder.
+	Momentum         string `json:"momentum"`           // STRONG / RISING / FADING / DEAD / NEUTRAL
+	CanBuy           bool   `json:"can_buy"`            // 可以買嗎
+	PullbackBuy      bool   `json:"pullback_buy"`       // 現在是回測買點嗎
+	VolumeFade       bool   `json:"volume_fade"`        // 量能衰退（Level 1）
+	BuyFlowWeakening bool   `json:"buy_flow_weakening"` // 買盤衰退
+	Break5mSupport   bool   `json:"break_5m_support"`   // 5分跌破支撐
+	MomentumFading   bool   `json:"momentum_fading"`    // 動能是否衰退
+	ExitLevel        int    `json:"exit_level"`         // 0 = none .. 4 = force exit
+	ShouldExit       bool   `json:"should_exit"`        // 是否應立即離場（Level 3+）
+
+	// StopRef is a reference invalidation line (recent 5m swing low), shown for
+	// context only. It is NOT a fixed stop — exits are momentum-driven.
+	StopRef float64 `json:"stop_ref"`
+
 	Score     int    `json:"score"`
 	Action    string `json:"action"`
-	CanTrade  bool   `json:"can_trade"`  // true when the 15m∧5m∧3m gate is open
 	MainForce string `json:"main_force"` // 主流股 / 短線炒作 / ""
 	Closed    bool   `json:"closed"`     // intraday data is Yahoo-only (market shut)
 
 	Reasons []string `json:"reasons"`
 }
 
-// Analyze produces the intraday RadarSignal from aggregated bars and order flow.
+// Analyze produces the intraday momentum signal from aggregated bars and flow.
 func Analyze(q *market.Quote, set market.IntradaySet, flow orderflow.Flow, cfg Config) RadarSignal {
 	t15 := trendOf(set.Bars15m)
 	t5 := trendOf(set.Bars5m)
@@ -93,91 +136,285 @@ func Analyze(q *market.Quote, set market.IntradaySet, flow orderflow.Flow, cfg C
 
 	t3 := trend3m(set.Bars3m, vol3)
 
-	var reasons []string
+	uptrend := t15 == Bullish
+	pullback := detectPullback(set.Bars5m, uptrend)
 
-	// ── Component scores, each normalised to 0..1 ──────────────
+	// ── Momentum-fade detectors ───────────────────────────────
+	volumeFade := detectVolumeFade(set.Bars3m, vol3, vol5)
+	flowWeak := detectBuyFlowWeakening(flow)
+	break5m := break5mSupport(set.Bars5m)
+
+	exitLevel := computeExitLevel(t15, volumeFade, flowWeak, break5m)
+	shouldExit := exitLevel >= 3
+	momentumFading := volumeFade || flowWeak
+
+	// ── Component scores (0..1) ───────────────────────────────
 	c15 := trendComponent(t15)
 	c5 := trendComponent(t5)
 	cVol := volTrendComponent(vol3, vol5, vol15)
 	cFlow := flowComponent(flow)
-	cBreak := breakoutComponent(t3)
+	cTrigger := math.Max(breakoutComponent(t3), boolComponent(pullback))
 
 	score := int(math.Round(
 		wTrend15m*c15 +
 			wTrend5m*c5 +
-			wVolTrend*cVol +
-			wBidAsk*cFlow +
-			wBreakout3m*cBreak,
+			wVolume*cVol +
+			wFlow*cFlow +
+			wTrigger*cTrigger,
 	))
-
-	// ── Reasons (plain-language, not raw indicator dumps) ──────
-	reasons = append(reasons, fmt.Sprintf("15分%s（方向）", zhTrend(t15)))
-	reasons = append(reasons, fmt.Sprintf("5分%s（進場）", zhTrend(t5)))
-	reasons = append(reasons, fmt.Sprintf("3分%s（點火）", zhTrend(t3)))
-	if flow.Trend != "" {
-		reasons = append(reasons, fmt.Sprintf("買盤%s（買賣比 %.2f）", flow.Trend, flow.Ratio))
+	if shouldExit && score > exitScoreCap {
+		score = exitScoreCap
 	}
 
+	momentum := classifyMomentum(t15, t5, flow, vol3, vol5, exitLevel, momentumFading)
 	mainForce := classifyMainForce(vol3, vol5, vol15)
-	if mainForce != "" {
-		reasons = append(reasons, fmt.Sprintf("%s（3分%.1fx／5分%.1fx／15分%.1fx）", mainForce, vol3, vol5, vol15))
-	}
+	action := decideAction(t15, t5, t3, score, flow, pullback, flowWeak, break5m, exitLevel, cfg)
+	canBuy := action == ActionStrongBuy || action == ActionBuy || action == ActionPullbackBuy
 
-	gate := t15 == Bullish && t5 == Bullish && t3 == Breakout
-	action := decideAction(gate, t15, t5, t3, score, flow, cfg)
+	reasons := buildReasons(t15, t5, t3, flow, pullback, volumeFade, flowWeak, break5m, exitLevel, mainForce, vol3, vol5, vol15)
 
 	return RadarSignal{
-		Code:      q.Code,
-		Name:      q.Name,
-		Price:     q.Price,
-		Trend15m:  t15,
-		Trend5m:   t5,
-		Trend3m:   t3,
-		Volume15m: vol15,
-		Volume5m:  vol5,
-		Volume3m:  vol3,
-		Flow:      flow,
-		Score:     score,
-		Action:    action,
-		CanTrade:  gate,
-		MainForce: mainForce,
-		Closed:    set.Closed,
-		Reasons:   reasons,
+		Code:             q.Code,
+		Name:             q.Name,
+		Price:            q.Price,
+		Trend15m:         t15,
+		Trend5m:          t5,
+		Trend3m:          t3,
+		Volume15m:        vol15,
+		Volume5m:         vol5,
+		Volume3m:         vol3,
+		Flow:             flow,
+		Momentum:         momentum,
+		CanBuy:           canBuy,
+		PullbackBuy:      pullback,
+		VolumeFade:       volumeFade,
+		BuyFlowWeakening: flowWeak,
+		Break5mSupport:   break5m,
+		MomentumFading:   momentumFading,
+		ExitLevel:        exitLevel,
+		ShouldExit:       shouldExit,
+		StopRef:          swingLow(set.Bars5m, pullbackLookback),
+		Score:            score,
+		Action:           action,
+		MainForce:        mainForce,
+		Closed:           set.Closed,
+		Reasons:          reasons,
 	}
 }
 
-// decideAction applies the day-trading action ladder. The cardinal rule: a BUY
-// requires the full 15m∧5m∧3m gate — a 3m volume spike alone never qualifies.
-func decideAction(gate bool, t15, t5, t3 string, score int, flow orderflow.Flow, cfg Config) string {
+// computeExitLevel maps the fade signals to the graduated exit ladder.
+// Volume shrinking alone is only a profit-taking alert (Level 1); a 15m trend
+// reversal forces you out regardless of volume (Level 4).
+func computeExitLevel(t15 string, volumeFade, flowWeak, break5m bool) int {
+	if t15 == Bearish {
+		return 4
+	}
+	switch {
+	case volumeFade && flowWeak && break5m:
+		return 3
+	case volumeFade && flowWeak:
+		return 2
+	case volumeFade:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// decideAction applies the momentum action ladder. Exit levels are checked first
+// (most severe wins), then entries, then the mild Level-1 profit alert and hold.
+func decideAction(t15, t5, t3 string, score int, flow orderflow.Flow, pullback, flowWeak, break5m bool, exitLevel int, cfg Config) string {
 	buyScore := cfg.BuyScore
-	watchScore := cfg.WatchScore
 	if buyScore == 0 {
 		buyScore = 80
 	}
-	if watchScore == 0 {
-		watchScore = 60
+
+	// Real breakdown / trend reversal — leave now.
+	switch exitLevel {
+	case 4:
+		return ActionForceExit
+	case 3:
+		return ActionExit
+	case 2:
+		return ActionTakeProfit
 	}
 
-	hasShortSignal := t3 == Breakout || t5 == Bullish || t3 == Bullish
+	// Strong-stock pullback entry: uptrend, healthy pullback reclaimed, buy flow
+	// not weakening, support intact. Volume contraction on the dip is expected
+	// here, so a Level-1 alert does not block it.
+	if pullback && t15 == Bullish && !flowWeak && !break5m {
+		return ActionPullbackBuy
+	}
 
+	// Fresh breakout entry still requires full alignment — a 3m spike alone never buys.
+	gate := t15 == Bullish && t5 == Bullish && t3 == Breakout
 	switch {
 	case gate && score >= buyScore+7 && flow.Trend == orderflow.TrendStrengthening:
 		return ActionStrongBuy
 	case gate && score >= buyScore:
 		return ActionBuy
-	case gate:
-		// Aligned but not strong enough to commit — keep watching.
-		return ActionWatch
-	case t15 == Bearish && t5 == Bearish && flow.Trend == orderflow.TrendWeakening:
-		return ActionStopLoss
-	case t15 == Bearish && !hasShortSignal:
-		return ActionReduce
-	case hasShortSignal && score >= watchScore-10:
-		// Shorter timeframes firing while direction not yet confirmed.
-		return ActionWatch
-	default:
-		return ActionWait
 	}
+
+	// Level 1: volume shrinking → prepare to take profit.
+	if exitLevel == 1 {
+		return ActionTakeProfitAlert
+	}
+
+	// Momentum intact but no fresh trigger — ride it.
+	if t15 == Bullish && t5 == Bullish {
+		return ActionHold
+	}
+	return ActionWait
+}
+
+// detectPullback reports a healthy pullback-buy on the 5m frame: an intact
+// uptrend that dipped toward MA20 support, held above it, and is now turning up.
+func detectPullback(c []market.Candle, uptrend bool) bool {
+	if !uptrend {
+		return false
+	}
+	n := len(c)
+	if n < 22 {
+		return false
+	}
+	ma := strategy.MA(c, 20)
+	if ma == 0 {
+		return false
+	}
+
+	last := c[n-1]
+	if last.Close <= ma || last.Close <= c[n-2].Close {
+		return false // must have reclaimed MA and be turning up
+	}
+
+	start := n - 1 - pullbackLookback
+	if start < 0 {
+		start = 0
+	}
+	touched, deepBreak := false, false
+	for i := start; i < n-1; i++ {
+		if c[i].Low <= ma*1.01 {
+			touched = true
+		}
+		if c[i].Close < ma*0.97 {
+			deepBreak = true // closed well below MA = breakdown, not a clean pullback
+		}
+	}
+	return touched && !deepBreak
+}
+
+// detectVolumeFade reports drying-up momentum volume: the current 3m bar is below
+// its trailing average and the last three 3m bars are strictly declining, or both
+// 3m and 5m volume are clearly contracted.
+func detectVolumeFade(bars3m []market.Candle, vol3, vol5 float64) bool {
+	if vol3 > 0 && vol3 < fadeVolRatio && decliningVolume(bars3m, 3) {
+		return true
+	}
+	return vol3 > 0 && vol3 < 0.7 && vol5 > 0 && vol5 < 0.7
+}
+
+// detectBuyFlowWeakening reports fading buy-side pressure from the order-flow trend.
+func detectBuyFlowWeakening(f orderflow.Flow) bool {
+	if f.Trend == orderflow.TrendWeakening {
+		return true
+	}
+	return f.Ratio > 0 && f.Ratio < 1.0 && f.RatioSlope < 0
+}
+
+// break5mSupport reports the 5m close dropping below its MA20 support.
+func break5mSupport(c []market.Candle) bool {
+	if len(c) < 22 {
+		return false
+	}
+	ma := strategy.MA(c, 20)
+	if ma == 0 {
+		return false
+	}
+	return c[len(c)-1].Close < ma*0.997
+}
+
+// decliningVolume reports whether the last n bars have strictly decreasing volume.
+func decliningVolume(c []market.Candle, n int) bool {
+	if len(c) < n+1 || n < 2 {
+		return false
+	}
+	seg := c[len(c)-n:]
+	for i := 1; i < len(seg); i++ {
+		if seg[i].Volume >= seg[i-1].Volume {
+			return false
+		}
+	}
+	return true
+}
+
+// swingLow returns the lowest low of the last n bars — a reference invalidation
+// line for the current move (not a fixed stop).
+func swingLow(c []market.Candle, n int) float64 {
+	if len(c) == 0 {
+		return 0
+	}
+	start := len(c) - n
+	if start < 0 {
+		start = 0
+	}
+	lo := c[start].Low
+	for _, b := range c[start+1:] {
+		if b.Low > 0 && b.Low < lo {
+			lo = b.Low
+		}
+	}
+	return r2(lo)
+}
+
+func classifyMomentum(t15, t5 string, flow orderflow.Flow, vol3, vol5 float64, exitLevel int, fading bool) string {
+	switch {
+	case exitLevel >= 3:
+		return MomDead
+	case fading || exitLevel >= 1:
+		return MomFading
+	case t15 == Bullish && t5 == Bullish && flow.Trend == orderflow.TrendStrengthening && (vol3 >= 1.2 || vol5 >= 1.2):
+		return MomStrong
+	case t15 == Bullish && t5 == Bullish:
+		return MomRising
+	default:
+		return MomNeutral
+	}
+}
+
+func buildReasons(t15, t5, t3 string, flow orderflow.Flow, pullback, volumeFade, flowWeak, break5m bool, exitLevel int, mainForce string, vol3, vol5, vol15 float64) []string {
+	var rs []string
+	rs = append(rs, fmt.Sprintf("15分%s（方向）", zhTrend(t15)))
+	rs = append(rs, fmt.Sprintf("5分%s（進場）", zhTrend(t5)))
+	rs = append(rs, fmt.Sprintf("3分%s（點火）", zhTrend(t3)))
+	if pullback {
+		rs = append(rs, "回測短均守住並翻揚（回測買點）")
+	}
+	if flow.Trend != "" {
+		rs = append(rs, fmt.Sprintf("買盤%s（買賣比 %.2f）", flow.Trend, flow.Ratio))
+	}
+	if volumeFade {
+		rs = append(rs, "量能衰退（上攻動能不足）")
+	}
+	if flowWeak {
+		rs = append(rs, "買盤衰退")
+	}
+	if break5m {
+		rs = append(rs, "5分跌破支撐")
+	}
+	switch exitLevel {
+	case 1:
+		rs = append(rs, "Level 1：動能開始衰退，建議準備獲利了結")
+	case 2:
+		rs = append(rs, "Level 2：量縮且買盤退，建議獲利了結")
+	case 3:
+		rs = append(rs, "Level 3：跌破支撐，建議離場")
+	case 4:
+		rs = append(rs, "Level 4：15分趨勢翻空，強制離場")
+	}
+	if mainForce != "" {
+		rs = append(rs, fmt.Sprintf("%s（3分%.1fx／5分%.1fx／15分%.1fx）", mainForce, vol3, vol5, vol15))
+	}
+	return rs
 }
 
 // trendOf classifies a timeframe by MA5 vs MA20 (falling back to price-vs-MA5
@@ -190,7 +427,6 @@ func trendOf(c []market.Candle) string {
 	ma20 := strategy.MA(c, 20)
 
 	if ma20 == 0 || ma5 == 0 {
-		// Early session: compare last close to whatever short MA we have.
 		ref := ma5
 		if ref == 0 {
 			ref = c[0].Close
@@ -216,8 +452,8 @@ func trendOf(c []market.Candle) string {
 	}
 }
 
-// trend3m returns Breakout when the 3m frame shows ignition (volume spike while
-// breaking the recent high), otherwise the ordinary MA-based trend.
+// trend3m returns Breakout on a volume-confirmed break of the recent high,
+// otherwise the ordinary MA-based trend.
 func trend3m(c []market.Candle, vol3 float64) string {
 	if isBreakout(c, vol3) {
 		return Breakout
@@ -225,7 +461,6 @@ func trend3m(c []market.Candle, vol3 float64) string {
 	return trendOf(c)
 }
 
-// isBreakout reports a volume-confirmed break above the prior-10-bar high.
 func isBreakout(c []market.Candle, volR float64) bool {
 	n := len(c)
 	if n < 6 {
@@ -270,8 +505,7 @@ func volRatio(c []market.Candle) float64 {
 	return r2(float64(c[n-1].Volume) / avg)
 }
 
-// classifyMainForce distinguishes broad institutional participation from a thin
-// short-term ramp, using volume consistency across timeframes.
+// classifyMainForce distinguishes broad participation from a thin short-term ramp.
 func classifyMainForce(vol3, vol5, vol15 float64) string {
 	switch {
 	case vol3 >= 1.5 && vol5 >= 1.5 && vol15 >= 1.5:
@@ -296,8 +530,6 @@ func trendComponent(t string) float64 {
 	}
 }
 
-// volTrendComponent scores multi-timeframe volume expansion. Each timeframe maps
-// 0.8x→0 .. 2.0x→1, then averages — so consistent expansion (主流股) scores high.
 func volTrendComponent(vol3, vol5, vol15 float64) float64 {
 	return (volScale(vol3) + volScale(vol5) + volScale(vol15)) / 3
 }
@@ -306,8 +538,6 @@ func volScale(r float64) float64 {
 	return clamp01((r - 0.8) / (2.0 - 0.8))
 }
 
-// flowComponent blends the order-flow direction (60%) with the absolute ratio
-// level (40%).
 func flowComponent(f orderflow.Flow) float64 {
 	var dir float64
 	switch f.Trend {
@@ -333,6 +563,13 @@ func breakoutComponent(t3 string) float64 {
 	default:
 		return 0.0
 	}
+}
+
+func boolComponent(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
 }
 
 func zhTrend(t string) string {

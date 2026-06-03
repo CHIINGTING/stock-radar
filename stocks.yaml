@@ -16,16 +16,36 @@ strategy:
 #     warn_start: "2026-05-28"
 #     warn_end: "2026-06-10"
 positions:
-  - code: "2337"
-    name: "旺宏"
-    market: "TW"
-    entry: 171.5
+  - code: "5483"
+    name: "中美晶"
+    market: "TWO"
+    entry: 166.5
     shares: 1000
-  - code: "2344"
-    name: "華邦電"
+  - code: "2356"
+    name: "英業達"
     market: "TW"
-    entry: 184.5
+    entry: 87.2
     shares: 1000
+  - code: "1605"
+    name: "華新"
+    market: "TW"
+    entry: 42.5
+    shares: 1000
+  - code: "3060"
+    name: "銘異"
+    market: "TW"
+    entry: 34.9
+    shares: 1000
+  - code: "4532"
+    name: "睿智"
+    market: "TW"
+    entry: 24.9
+    shares: 1000
+  - code: "3163"
+    name: "波若威"
+    market: "TWO"
+    entry: 1135
+    shares: 100
 
 # 自選觀察股
 watchlist:
@@ -41,17 +61,12 @@ watchlist:
   - code: "8299"
     name: "群聯"
     market: "TWO"         # TPEX 上櫃
-  - code: "3264"
-    name: "欣銓"
-    market: "TWO"         # TPEX 上櫃
   - code: "2409"
     name: "友達"
   - code: "2408"
     name: "南亞科"
   - code: "2356"
     name: "英業達"
-  - code: "2374"
-    name: "佳能"
   - code: "2337"
     name: "旺宏"
   - code: "2303"
@@ -74,5 +89,17 @@ watchlist:
     name: "瑞昱"
   - code: "3060"
     name: "異銘"
-  - code: "2009"
-    name: "第一銅"
+  - code: "1605"
+    name: "華新"
+  - code: "3481"
+    name: "群創"
+  - code: "5425"
+    name: "台半"
+  - code: "2887"
+    name: "台新新光金"
+  - code: "2324"
+    name: "仁寶"
+  - code: "2891"
+    name: "中信金"
+  - code: "3163"
+    name: "波若威"

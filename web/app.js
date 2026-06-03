@@ -171,7 +171,8 @@ function renderRadar(data) {
     }
     data.forEach(s => {
         const tr = document.createElement('tr');
-        if (s.can_trade) tr.classList.add('radar-go');
+        if (s.can_buy) tr.classList.add('radar-go');
+        if (s.should_exit) tr.classList.add('radar-exit');
         tr.onclick = () => showRadarDetail(s);
         const a = actionSlug(s.action);
         const closed = s.closed ? '<span class="closed-tag">已收盤</span>' : '';
@@ -184,45 +185,82 @@ function renderRadar(data) {
             <td class="tf-cell">${tfLight(s.trend_3m)}</td>
             <td>${volCell(s)}</td>
             <td>${flowCell(s.flow)}</td>
-            <td><span class="score-badge score-${scoreTier(s.score)}">${s.score}</span></td>
+            <td><span class="score-badge score-${scoreTier(s.score)}">${s.score}</span><br>${momentumChip(s.momentum)}</td>
             <td><span class="${a} action-badge">${s.action}</span></td>`;
         tbody.appendChild(tr);
     });
 }
 
+// momentumChip renders the momentum state as a coloured chip.
+function momentumChip(m) {
+    const map = {
+        'STRONG':  { c: 'mom-strong',  z: '動能強' },
+        'RISING':  { c: 'mom-rising',  z: '動能上升' },
+        'FADING':  { c: 'mom-fading',  z: '動能衰退' },
+        'DEAD':    { c: 'mom-dead',    z: '動能消失' },
+        'NEUTRAL': { c: 'mom-neutral', z: '中性' },
+    };
+    const i = map[m] || map['NEUTRAL'];
+    return `<span class="mom-chip ${i.c}">${i.z}</span>`;
+}
+
+// exitLadder renders the 4-level graduated exit ladder, highlighting the active level.
+function exitLadder(level) {
+    const levels = [
+        { n: 1, t: 'L1 量縮 · 準備獲利了結' },
+        { n: 2, t: 'L2 量縮+買盤退 · 獲利了結' },
+        { n: 3, t: 'L3 跌破支撐 · 離場' },
+        { n: 4, t: 'L4 趨勢翻空 · 強制出' },
+    ];
+    return `<div class="exit-ladder">${levels.map(l =>
+        `<div class="el-step ${level >= l.n ? 'el-on el-on-' + l.n : ''}">${l.t}</div>`
+    ).join('')}</div>`;
+}
+
 function showRadarDetail(s) {
     const a = actionSlug(s.action);
-    const yn = (ok, yes, no) => ok ? `<span class="up">${yes}</span>` : `<span class="down">${no}</span>`;
-    const dir = s.trend_15m === 'Bullish';
-    const brk = s.trend_3m === 'Breakout';
-    const mainIn = s.flow && s.flow.trend === '增強';
+    const yn = (ok, yes, no, good) => {
+        // good=true → green-good answer is the "ok" branch; default ok=positive(up).
+        const okCls = good === false ? 'down' : 'up';
+        const noCls = good === false ? 'up' : 'down';
+        return ok ? `<span class="${okCls}">${yes}</span>` : `<span class="${noCls}">${no}</span>`;
+    };
 
     document.getElementById('detailContent').innerHTML = `
         <div class="scanner-detail">
             <div class="sd-header">
                 <div>
                     <h3 style="margin:0">${s.name} <span style="color:#888;font-weight:400">(${s.code})</span></h3>
-                    <div style="margin-top:4px">現價 <strong>${fmt(s.price)}</strong> ${s.closed ? '<span class="closed-tag">已收盤</span>' : ''}</div>
+                    <div style="margin-top:4px">現價 <strong>${fmt(s.price)}</strong> ${momentumChip(s.momentum)} ${s.closed ? '<span class="closed-tag">已收盤</span>' : ''}</div>
                 </div>
                 <span class="${a} action-badge" style="font-size:16px">${s.action}</span>
             </div>
 
             <div class="radar-q">
                 <div class="rq-card">
-                    <div class="rq-label">今天能不能做？</div>
-                    <div class="rq-value">${yn(s.can_trade, 'GO 條件成立', '尚未成立')} <span class="score-badge score-${scoreTier(s.score)}">${s.score}</span></div>
+                    <div class="rq-label">可以買嗎？</div>
+                    <div class="rq-value">${yn(s.can_buy, '可進場', '先不買')} <span class="score-badge score-${scoreTier(s.score)}">${s.score}</span></div>
                 </div>
                 <div class="rq-card">
-                    <div class="rq-label">方向對不對？（15分）</div>
-                    <div class="rq-value">${tfLight(s.trend_15m)} ${yn(dir, '方向偏多', '方向不利')}</div>
+                    <div class="rq-label">現在是回測買點嗎？</div>
+                    <div class="rq-value">${yn(s.pullback_buy, '回測買點', '非回測點')}</div>
                 </div>
                 <div class="rq-card">
-                    <div class="rq-label">是不是突破點？（3分）</div>
-                    <div class="rq-value">${tfLight(s.trend_3m)} ${yn(brk, '3分突破', '尚未點火')}</div>
+                    <div class="rq-label">動能是否衰退？</div>
+                    <div class="rq-value">${yn(s.momentum_fading, '動能衰退', '動能健康', false)}</div>
                 </div>
                 <div class="rq-card">
-                    <div class="rq-label">主力進場沒？</div>
-                    <div class="rq-value">${yn(mainIn, '買盤增強', '買盤未增')} ${s.main_force ? `<span class="main-force ${s.main_force === '主流股' ? 'mf-main' : 'mf-spec'}">${s.main_force}</span>` : ''}</div>
+                    <div class="rq-label">是否應立即離場？</div>
+                    <div class="rq-value">${yn(s.should_exit, '立即離場', '無須離場', false)}</div>
+                </div>
+            </div>
+
+            <div class="sd-card" style="margin-bottom:14px">
+                <div class="sd-label">獲利了結 / 離場階梯（動能導向，非固定停損）</div>
+                ${exitLadder(s.exit_level)}
+                <div style="font-size:12px;color:#888;margin-top:6px">
+                    量縮=獲利了結訊號 · 量縮+買盤退=出 · 趨勢翻空=強制出
+                    ${s.stop_ref > 0 ? ` &nbsp;|&nbsp; 參考防線 ${fmt(s.stop_ref)}` : ''}
                 </div>
             </div>
 
