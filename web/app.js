@@ -255,15 +255,6 @@ function showRadarDetail(s) {
                 </div>
             </div>
 
-            <div class="sd-card" style="margin-bottom:14px">
-                <div class="sd-label">獲利了結 / 離場階梯（動能導向，非固定停損）</div>
-                ${exitLadder(s.exit_level)}
-                <div style="font-size:12px;color:#888;margin-top:6px">
-                    量縮=獲利了結訊號 · 量縮+買盤退=出 · 趨勢翻空=強制出
-                    ${s.stop_ref > 0 ? ` &nbsp;|&nbsp; 參考防線 ${fmt(s.stop_ref)}` : ''}
-                </div>
-            </div>
-
             <div class="sd-grid3">
                 <div class="sd-card">
                     <div class="sd-label">三時間框</div>
@@ -497,6 +488,21 @@ function buildLimitSection(s) {
 
 /* ─── Portfolio ────────────────────────────────────────────── */
 
+// momentumLadderBlock renders a holding's intraday momentum state and the
+// graduated take-profit / exit ladder (動能導向，非固定停損).
+function momentumLadderBlock(r) {
+    if (!r) return '';
+    const ma = actionSlug(r.action);
+    return `
+    <div class="pos-momentum">
+        <div class="pos-mom-head">
+            <span class="pos-metric-label">動能 / 離場階梯 ${r.closed ? '<span class="closed-tag">已收盤</span>' : ''}</span>
+            <span>${momentumChip(r.momentum)} <span class="${ma} action-badge">${r.action}</span></span>
+        </div>
+        ${exitLadder(r.exit_level)}
+    </div>`;
+}
+
 async function loadPositions() {
     const res = await fetch('/api/positions');
     positionData = await res.json();
@@ -546,12 +552,44 @@ function positionCard(p) {
                 <span style="font-size:12px;color:#888">技術分 ${p.score}</span>
             </div>
         </div>
+        ${momentumLadderBlock(p.radar)}
         <div class="pos-targets">
-            <span class="target-label stop">停損 ${fmt(p.stop_loss)}</span>
+            <span class="target-label stop">參考防線 ${fmt(p.radar && p.radar.stop_ref > 0 ? p.radar.stop_ref : p.stop_loss)}</span>
             <span class="target-label t1">目標一 ${fmt(p.target1)}</span>
             <span class="target-label t2">目標二 ${fmt(p.target2)}</span>
             <span class="target-label rr">風報 1:${fmt(p.risk_reward)}</span>
         </div>
+    </div>`;
+}
+
+// positionMomentumSection renders the full intraday momentum / exit-ladder panel
+// for a holding — the primary momentum-driven exit view (動能消失即離場).
+function positionMomentumSection(r) {
+    if (!r) return '';
+    const ma = actionSlug(r.action);
+    const yn = (ok, yes, no, badIsUp) => {
+        const okCls = badIsUp ? 'down' : 'up';
+        const noCls = badIsUp ? 'up' : 'down';
+        return ok ? `<span class="${okCls}">${yes}</span>` : `<span class="${noCls}">${no}</span>`;
+    };
+    return `
+    <div class="momentum-box">
+        <div class="advice-title">動能管理 ${momentumChip(r.momentum)} <span class="${ma} action-badge">${r.action}</span> ${r.closed ? '<span class="closed-tag">已收盤</span>' : ''}</div>
+        <div class="exit-ladder" style="margin:8px 0">
+            ${[1,2,3,4].map(n => {
+                const labels = {1:'L1 量縮·準備獲利了結',2:'L2 量縮+買盤退·獲利了結',3:'L3 跌破支撐·離場',4:'L4 趨勢翻空·強制出'};
+                return `<div class="el-step ${r.exit_level >= n ? 'el-on el-on-' + n : ''}">${labels[n]}</div>`;
+            }).join('')}
+        </div>
+        <div class="mom-flags">
+            <span>三框 ${tfLight(r.trend_15m)}${tfLight(r.trend_5m)}${tfLight(r.trend_3m)}</span>
+            <span>量縮 ${yn(r.volume_fade, '是', '否', true)}</span>
+            <span>買盤退 ${yn(r.buy_flow_weakening, '是', '否', true)}</span>
+            <span>破支撐 ${yn(r.break_5m_support, '是', '否', true)}</span>
+            <span>立即離場 ${yn(r.should_exit, '是', '否', true)}</span>
+        </div>
+        <div style="font-size:12px;color:#888;margin-top:6px">買賣單流：${flowCell(r.flow)}</div>
+        <div style="font-size:12px;color:#888;margin-top:4px">量縮＝獲利了結訊號（非停損）。參考防線 ${r.stop_ref > 0 ? fmt(r.stop_ref) : '-'}（非固定停損價）。</div>
     </div>`;
 }
 
@@ -585,6 +623,7 @@ function showPositionDetail(p) {
             <div class="advice-title">交易建議</div>
             <div class="advice-text">${p.advice}</div>
         </div>
+        ${positionMomentumSection(p.radar)}
         <div class="detail-grid">
             <div class="detail-card">
                 <div class="label">停損 / 目標</div>

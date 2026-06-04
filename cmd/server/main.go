@@ -32,6 +32,11 @@ func main() {
 	)
 
 	http.HandleFunc(
+		"/api/metrics",
+		h.Metrics,
+	)
+
+	http.HandleFunc(
 		"/api/analyze",
 		h.AnalyzeStock,
 	)

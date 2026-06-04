@@ -4,6 +4,23 @@ strategy:
   buy_score: 80
   watch_score: 60
 
+# TWSE MIS 即時報價連線設定（皆可省略，省略則用內建預設）
+# 重要：force_http1 預設 true，因為 TWSE MIS 會 reset 掉 HTTP/2 連線
+#       （以 cmd/twse-diag 矩陣 A–G 確認：h2 全 reset、h1 全成功）。
+twse:
+  force_http1: true        # 禁用 HTTP/2（解決 connection reset by peer）
+  max_concurrent: 3        # 全域同時請求上限
+  timeout_seconds: 10      # 每次請求逾時
+  max_retries: 3           # reset/eof/timeout 才重試，300/700/1500ms + jitter
+  disable_keepalive: false # reset 仍頻繁時可改 true（診斷 D 顯示也有幫助）
+
+# Yahoo Finance 連線設定（歷史日線 + 盤中分鐘 K）。預設 HTTP/2（Yahoo 對 h2 正常）。
+# 若你的網路對 Yahoo 也會 reset HTTP/2，把 force_http1 改成 true。
+yahoo:
+  force_http1: false       # 預設 false；網路對 Yahoo 也 reset h2 時改 true
+  timeout_seconds: 10
+  disable_keepalive: false
+
 # 欄位說明：
 #   market:     "TW" = 上市 / "TWO" = 上櫃 / 不填 = 自動偵測
 #   warn:       "處置股" 或 "注意股"（不填 = 正常）
@@ -16,63 +33,45 @@ strategy:
 #     warn_start: "2026-05-28"
 #     warn_end: "2026-06-10"
 positions:
-  - code: "5483"
-    name: "中美晶"
-    market: "TWO"
-    entry: 166.5
-    shares: 1000
-  - code: "2356"
-    name: "英業達"
-    market: "TW"
-    entry: 87.2
+  - code: "1504"
+    name: "東元"
+    entry: 75.6
     shares: 1000
   - code: "1605"
     name: "華新"
     market: "TW"
     entry: 42.5
     shares: 1000
-  - code: "3060"
-    name: "銘異"
-    market: "TW"
-    entry: 34.9
-    shares: 1000
   - code: "4532"
     name: "睿智"
     market: "TW"
     entry: 24.9
     shares: 1000
-  - code: "3163"
-    name: "波若威"
-    market: "TWO"
-    entry: 1135
+  - code: "2887"
+    name: "新光"
+    market: "TW"
+    entry: 29.35
+    shares: 1000
+  - code: "2820"
+    name: "華票"
+    market: "TW"
+    entry: 17.3
+    shares: 1000
+  - code: "2303"
+    name: "聯電"
+    market: "TW"
+    entry: 139.2
+    shares: 300
+  - code: "2356"
+    name: "英業達"
+    market: "TW"
+    entry: 82.9
     shares: 100
 
 # 自選觀察股
 watchlist:
-  - code: "1582"
-    name: "信錦"
-  - code: "3048"
-    name: "益登"
-  - code: "2401"
-    name: "凌陽"
-  - code: "5483"
-    name: "中美晶"
-    market: "TWO"         # TPEX 上櫃
-  - code: "8299"
-    name: "群聯"
-    market: "TWO"         # TPEX 上櫃
   - code: "2409"
     name: "友達"
-  - code: "2408"
-    name: "南亞科"
-  - code: "2356"
-    name: "英業達"
-  - code: "2337"
-    name: "旺宏"
-  - code: "2303"
-    name: "聯電"
-  - code: "2344"
-    name: "華邦電"
   - code: "1504"
     name: "東元"
   - code: "2419"
@@ -81,14 +80,8 @@ watchlist:
     name: "全漢"
   - code: "4532"
     name: "瑞智"
-  - code: "3013"
-    name: "晟銘電"
-  - code: "2328"
-    name: "廣宇"
   - code: "2379"
     name: "瑞昱"
-  - code: "3060"
-    name: "異銘"
   - code: "1605"
     name: "華新"
   - code: "3481"
@@ -99,7 +92,11 @@ watchlist:
     name: "台新新光金"
   - code: "2324"
     name: "仁寶"
-  - code: "2891"
-    name: "中信金"
   - code: "3163"
     name: "波若威"
+  - code: "1809"
+    name: "中釉"
+  - code: "8454"
+    name: "富邦媒"
+  - code: "1802"
+    name: "台玻"

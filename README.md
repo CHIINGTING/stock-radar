@@ -26,6 +26,7 @@
 - [Action 定義總表](#action-定義總表)
 - [停損邏輯](#停損邏輯)
 - [Yahoo .TW / .TWO 說明](#yahoo-tw--two-說明)
+- [連線問題排查（connection reset）](#連線問題排查connection-reset-by-peer)
 - [API 端點](#api-端點)
 - [常見問題](#常見問題)
 - [免責聲明](#免責聲明)
@@ -81,6 +82,20 @@ strategy:
   buy_score: 80      # 達到此分數顯示 BUY
   watch_score: 60    # 達到此分數顯示 WATCH
 
+# TWSE MIS 即時報價連線設定（可整段省略，省略則用內建預設）
+twse:
+  force_http1: true        # 禁用 HTTP/2（解決 connection reset by peer，預設 true）
+  max_concurrent: 3        # 全域同時請求上限
+  timeout_seconds: 10      # 每次請求逾時
+  max_retries: 3           # reset/eof/timeout 才重試，300/700/1500ms + jitter
+  disable_keepalive: false # reset 仍頻繁時可改 true
+
+# Yahoo Finance 連線設定（歷史日線 + 盤中分鐘 K），預設 HTTP/2
+yahoo:
+  force_http1: false       # 網路對 Yahoo 也 reset h2 時改 true（預設 false）
+  timeout_seconds: 10
+  disable_keepalive: false
+
 # 持股（Portfolio）
 positions:
   - code: "2337"
@@ -126,6 +141,80 @@ watchlist:
 | `warn_end` | 自選 | ⬜ | 預計解除日，用於倒數顯示 |
 
 > **建議**：上櫃股票務必填 `market: "TWO"`。雖然系統會自動偵測，但明確指定可避免偶發的探測延遲與抓錯市場。
+
+### `twse:` 連線設定
+
+| 欄位 | 預設 | 說明 |
+|---|---|---|
+| `force_http1` | `true` | 禁用 HTTP/2。**TWSE MIS 會 reset 掉 HTTP/2 連線**，這是 `connection reset by peer` 的根因（見下方）|
+| `max_concurrent` | `3` | 全域同時請求上限（semaphore）|
+| `timeout_seconds` | `10` | 每次請求逾時 |
+| `max_retries` | `3` | 僅對 reset / EOF / timeout 重試，退避 300 / 700 / 1500ms 並加 0~300ms jitter |
+| `disable_keepalive` | `false` | 每次請求用新連線；reset 仍頻繁時可改 `true` |
+
+### `yahoo:` 連線設定
+
+Yahoo 的歷史日線與盤中分鐘 K 走另一條客戶端，預設 **HTTP/2**（Yahoo 對 h2 正常，過去只遇過 429 限流、非 reset）。若你的網路對 Yahoo 也會 reset HTTP/2，可同樣切換：
+
+| 欄位 | 預設 | 說明 |
+|---|---|---|
+| `force_http1` | `false` | 設 `true` 可禁用 HTTP/2（與 MIS 相同的開關）|
+| `timeout_seconds` | `10` | 每次請求逾時 |
+| `disable_keepalive` | `false` | 每次請求用新連線 |
+
+啟動時兩條客戶端都會印出目前模式：
+
+```
+MIS client: HTTP/1.1 keep-alive=true concurrency=3 timeout=10s retries=3
+Yahoo client: HTTP/2 keep-alive=true timeout=10s
+```
+
+---
+
+## 連線問題排查（connection reset by peer）
+
+若 log 出現：
+
+```
+cache: refresh code=2324 err=... read: connection reset by peer
+```
+
+**根因：TWSE MIS 端點會 reset HTTP/2 連線。** 本專案的即時報價客戶端預設已強制 HTTP/1.1（`twse.force_http1: true`），正常情況不會遇到。若你改了設定或想自行驗證，附有一支診斷工具。
+
+### 診斷工具 `cmd/twse-diag`
+
+用測試矩陣比對「什麼條件下會 reset」，不靠猜：
+
+```bash
+go run ./cmd/twse-diag                       # 跑完整矩陣 A–G
+go run ./cmd/twse-diag -scenario E -rounds 5 # 只跑某情境
+go run ./cmd/twse-diag -codes 2324,3481 -v   # 自訂股票 + 逐筆 log
+```
+
+矩陣涵蓋：併發數、請求間隔、UA/Referer、session cookie、HTTP 版本、keep-alive、timeout、retry backoff。輸出每情境的 total / success / reset / timeout / non-200 / 平均延遲 / **p95** / **每檔錯誤率**，並列出對照表。
+
+| 情境 | 條件 |
+|---|---|
+| A | baseline：concurrency=1、interval=1000ms、預設 client |
+| B | normal radar：concurrency=3、interval=500ms、有 UA/Referer |
+| C | aggressive：concurrency=10、interval=100ms |
+| D | 關閉 keep-alive |
+| **E** | **強制 HTTP/1.1** |
+| F | session mode：先 GET `index.jsp` 取 cookie |
+| **G** | safe production：HTTP/1.1 + jitter + 指數退避重試 |
+
+### 實測結論
+
+實機跑出的結果非常一致——**只有 HTTP 版本有差**：
+
+| HTTP 版本 | 情境 | success | reset |
+|---|---|---|---|
+| HTTP/2 | A / B / C / D / F | **0%** | 全 reset |
+| **HTTP/1.1** | **E / G** | **100%** | **0** |
+
+併發、間隔、cookie、keep-alive 都不影響——換成 HTTP/1.1 就完全解決。本專案因此預設 `force_http1: true`。
+
+> 讀表方式：reset 只在 C（高頻）爆 → 是頻率/併發；E（HTTP/1.1）或 D（關 keep-alive）就好 → 是 h2 / 連線重用；F（session）就好 → MIS 需要 cookie；A（baseline）就 reset → 上游/proxy/網路。
 
 ---
 
@@ -296,7 +385,8 @@ Volume3m = 3.5x   Volume5m = 1.1x   Volume15m = 0.8x   →  短線炒作（只�
 
 **用途：** 針對已持有的股票，直接告訴你現在該怎麼做，而不是秀一堆數字讓你自己猜。
 
-**顯示：** 成本價、現價、損益%、停損價、目標一/二、風報比，以及**建議動作 + 完整中文交易建議**。
+**顯示：** 成本價、現價、損益%、目標一/二、風報比，以及**建議動作 + 完整中文交易建議**，
+再加上每檔持股的**動能離場階梯**（盤中即時驅動）。
 
 範例：
 
@@ -306,8 +396,37 @@ Action: STOP LOSS
 原因：跌破 MA20、買盤衰退、量能下降
 ```
 
-持倉 Action：`STRONG BUY`（加碼）/ `HOLD`（續抱）/ `REDUCE`（減碼）/ `TAKE PROFIT`（獲利了結）/ `STOP LOSS`（停損）/ `SELL`（出清）。
+持倉的「日線建議」Action：`STRONG BUY`（加碼）/ `HOLD`（續抱）/ `REDUCE`（減碼）/ `TAKE PROFIT`（獲利了結）/ `STOP LOSS`（停損）/ `SELL`（出清）。
 詳見 [Action 定義總表](#action-定義總表) 與 [停損邏輯](#停損邏輯)。
+
+### 動能離場階梯（持倉的核心）
+
+對強勢股交易，**量縮代表上攻動能不足，應優先視為獲利了結訊號，而非停損**。
+因此每檔持股除了上面的日線建議，還會用 [Radar](#radar--當沖工具) 的盤中動能模型（3/5/15 分 K ＋ 委買賣單流）
+計算一套**四級漸進離場階梯**，直接顯示在持股卡片上：
+
+| Level | 條件 | Action | 你該做什麼 |
+|---|---|---|---|
+| **1** | 量縮（Volume Fade） | `TAKE PROFIT ALERT` | 動能開始衰退，**準備**獲利了結，先別急著全賣 |
+| **2** | 量縮 ＋ 買盤衰退 | `TAKE PROFIT` | 建議**獲利了結**，可分批出 |
+| **3** | 量縮 ＋ 買盤衰退 ＋ 5 分跌破支撐 | `EXIT` | 動能消失，**離場** |
+| **4** | 15 分趨勢翻空 | `FORCE EXIT` | **強制離場**（不論量能） |
+
+> 卡片上的階梯會亮到目前所在的等級；`should_exit`（建議立即離場）對應 **Level 3 以上**，
+> Level 1、2 屬獲利了結、不是「立即離場」。
+
+**核心邏輯一句話：**
+
+```
+有量進  →  量縮觀察  →  量縮 + 買盤退 = 出  →  趨勢翻空 = 強制出
+```
+
+**參考防線（非固定停損）：** 卡片同時顯示一條「參考防線」（近 6 根 5 分 K 的低點），
+僅供你判斷動能結構是否破壞之用——**這不是固定停損價**。本工具的離場以動能消失為準，
+不是等價格跌到某個預設價位才出場。
+
+> **盤中才會即時更新**：離場階梯依賴盤中分鐘 K 與委買賣單流，於台股交易時段（09:00–13:30）即時驅動；
+> 收盤後顯示當日最後狀態並標記「已收盤」。買賣單流趨勢需累積數分鐘才會出現方向。
 
 ---
 
@@ -421,6 +540,7 @@ MA20 是中短期多空分水嶺，跌破通常代表趨勢轉弱，因此 MA20 
 | `GET /api/stocks` | 自選股日線技術分析（Watchlist 資料來源）|
 | `GET /api/positions` | 持股持倉分析（Portfolio 資料來源）|
 | `GET /api/analyze?code=2330` | 單一股票完整技術分析 |
+| `GET /api/metrics` | 對外抓取健康度：成功率、EOF 次數、重試次數、平均回應時間 |
 
 **`/api/radar` 回應範例（單檔）：**
 

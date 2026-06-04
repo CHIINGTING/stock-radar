@@ -12,8 +12,30 @@ type Config struct {
 		BuyScore   int `yaml:"buy_score"`
 		WatchScore int `yaml:"watch_score"`
 	} `yaml:"strategy"`
+	TWSE      TWSEConfig       `yaml:"twse"`
+	Yahoo     YahooConfig      `yaml:"yahoo"`
 	Positions []PositionConfig `yaml:"positions"`
 	Watchlist []StockConfig    `yaml:"watchlist"`
+}
+
+// YahooConfig tunes the Yahoo Finance client (daily history + intraday K). HTTP/2
+// stays on by default (Yahoo serves it fine); set force_http1 if your network
+// also resets HTTP/2 to Yahoo.
+type YahooConfig struct {
+	ForceHTTP1       *bool `yaml:"force_http1"`       // disable HTTP/2 (default false)
+	TimeoutSeconds   int   `yaml:"timeout_seconds"`   // per-request timeout (default 10)
+	DisableKeepAlive bool  `yaml:"disable_keepalive"` // close connection after each request
+}
+
+// TWSEConfig tunes the realtime MIS client. All fields are optional; unset values
+// keep the hardened defaults. force_http1 defaults to true because the TWSE MIS
+// endpoint resets HTTP/2 connections (confirmed via cmd/twse-diag).
+type TWSEConfig struct {
+	MaxConcurrent    int   `yaml:"max_concurrent"`    // global in-flight cap (default 3)
+	TimeoutSeconds   int   `yaml:"timeout_seconds"`   // per-request timeout (default 10)
+	MaxRetries       int   `yaml:"max_retries"`       // retries on transient errors (default 3)
+	ForceHTTP1       *bool `yaml:"force_http1"`       // disable HTTP/2 (default true)
+	DisableKeepAlive bool  `yaml:"disable_keepalive"` // close connection after each request
 }
 
 type StockConfig struct {

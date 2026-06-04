@@ -18,6 +18,12 @@ import (
 const (
 	historyTTL = 4 * time.Hour
 
+	// Response-level caches. Scanner is swing-oriented (daily data) so a long TTL
+	// is fine; Radar is intraday so it refreshes quickly. Both cut upstream load
+	// and thus EOFs by serving recent computed results.
+	scannerCacheTTL = 30 * time.Minute
+	radarCacheTTL   = 30 * time.Second
+
 	// pollInterval is the minimum gap between background quote refreshes that
 	// feed the order-flow recorder. A full refresh already takes several seconds
 	// (rate-limited worker pool), so this keeps a steady ~per-30s sampling cadence
@@ -45,10 +51,29 @@ type Handler struct {
 	// when a fetch transiently fails.
 	intraMu   sync.RWMutex
 	intraData map[string]market.IntradaySet
+
+	// Cached, pre-serialised endpoint responses (see scannerCacheTTL / radarCacheTTL).
+	scannerMu    sync.Mutex
+	scannerCache respCache
+	radarMu      sync.Mutex
+	radarCache   respCache
 }
 
-// NewHandler pre-loads the realtime quote cache synchronously so that the first
-// HTTP request is served instantly. History data is loaded lazily on demand.
+// respCache holds a pre-serialised JSON response and when it was produced.
+type respCache struct {
+	data []byte
+	at   time.Time
+}
+
+func (c respCache) fresh(ttl time.Duration) bool {
+	return c.data != nil && time.Since(c.at) < ttl
+}
+
+// NewHandler builds the handler and kicks off a background quote refresh so the
+// server starts listening immediately. The cache fills in shortly after (and
+// every endpoint also refreshes on-demand when empty). History and intraday data
+// load lazily. Startup must not block on upstream fetches — with retry/backoff a
+// fully-down MIS could otherwise stall the boot for tens of seconds.
 func NewHandler(cfg *config.Config) *Handler {
 	// Build market-hint maps from config.
 	markets := make(map[string]string)
@@ -67,13 +92,57 @@ func NewHandler(cfg *config.Config) *Handler {
 		}
 	}
 
-	realtime := &market.TWSEProvider{MarketHints: misHints}
+	// Hardened MIS client: HTTP/1.1 (TWSE MIS resets HTTP/2 — see cmd/twse-diag),
+	// low concurrency, browser headers, retry with backoff+jitter, per-code
+	// single-flight, last-good retained on failure. Operational knobs come from
+	// stocks.yaml's `twse:` section, layered over the hardened defaults.
+	tc := market.DefaultTwseConfig()
+	if cfg.TWSE.MaxConcurrent > 0 {
+		tc.MaxConcurrent = cfg.TWSE.MaxConcurrent
+	}
+	if cfg.TWSE.TimeoutSeconds > 0 {
+		tc.Timeout = time.Duration(cfg.TWSE.TimeoutSeconds) * time.Second
+	}
+	if cfg.TWSE.MaxRetries > 0 {
+		tc.MaxRetries = cfg.TWSE.MaxRetries
+	}
+	if cfg.TWSE.ForceHTTP1 != nil {
+		tc.ForceHTTP1 = *cfg.TWSE.ForceHTTP1
+	}
+	tc.DisableKeepAlives = cfg.TWSE.DisableKeepAlive
+
+	httpVer := "HTTP/2"
+	if tc.ForceHTTP1 {
+		httpVer = "HTTP/1.1"
+	}
+	log.Printf("MIS client: %s keep-alive=%v concurrency=%d timeout=%s retries=%d",
+		httpVer, !tc.DisableKeepAlives, tc.MaxConcurrent, tc.Timeout, tc.MaxRetries)
+
+	realtime := market.NewTwseClient(tc, misHints)
+
+	// Yahoo client (daily history + intraday). HTTP/2 by default; flip
+	// `yahoo.force_http1` if the network resets h2 to Yahoo too.
+	yForceH1 := false
+	if cfg.Yahoo.ForceHTTP1 != nil {
+		yForceH1 = *cfg.Yahoo.ForceHTTP1
+	}
+	yTimeout := 10 * time.Second
+	if cfg.Yahoo.TimeoutSeconds > 0 {
+		yTimeout = time.Duration(cfg.Yahoo.TimeoutSeconds) * time.Second
+	}
+	yahooClient := market.NewHTTPClient(yTimeout, yForceH1, cfg.Yahoo.DisableKeepAlive)
+
+	yHTTPVer := "HTTP/2"
+	if yForceH1 {
+		yHTTPVer = "HTTP/1.1"
+	}
+	log.Printf("Yahoo client: %s keep-alive=%v timeout=%s", yHTTPVer, !cfg.Yahoo.DisableKeepAlive, yTimeout)
 
 	h := &Handler{
 		cfg:       cfg,
 		realtime:  realtime,
-		history:   &market.YahooHistoryProvider{},
-		intraday:  &market.YahooIntradayProvider{},
+		history:   &market.YahooHistoryProvider{Client: yahooClient},
+		intraday:  &market.YahooIntradayProvider{Client: yahooClient},
 		cache:     market.NewCache(),
 		flow:      orderflow.NewRecorder(),
 		markets:   markets,
@@ -81,8 +150,7 @@ func NewHandler(cfg *config.Config) *Handler {
 		histTime:  make(map[string]time.Time),
 		intraData: make(map[string]market.IntradaySet),
 	}
-	h.cache.Refresh(h.codes(), h.realtime)
-	h.recordFlow() // seed the first order-flow sample
+	h.cache.RefreshAsync(h.codes(), h.realtime) // non-blocking: fill cache in background
 	return h
 }
 
@@ -91,9 +159,17 @@ func NewHandler(cfg *config.Config) *Handler {
 // populated continuously regardless of which endpoints are being hit.
 func (h *Handler) StartPolling() {
 	go func() {
+		cycle := 0
 		for {
 			h.cache.Refresh(h.codes(), h.realtime)
 			h.recordFlow()
+			// Log fetch health periodically (~every 2 min) for EOF diagnosis.
+			if cycle%12 == 0 {
+				m := market.GlobalMetrics.Snapshot()
+				log.Printf("fetch metrics: requests=%d success_rate=%.1f%% eof=%d retries=%d avg=%.0fms",
+					m.Requests, m.SuccessRate*100, m.EOFCount, m.Retries, m.AvgMs)
+			}
+			cycle++
 			time.Sleep(pollInterval)
 		}
 	}()
@@ -275,6 +351,11 @@ type positionRow struct {
 	LargeOrder  bool     `json:"large_order"`
 	BidAskRatio float64  `json:"bid_ask_ratio"`
 	Reasons     []string `json:"reason"`
+
+	// Radar carries the intraday momentum signal driving the graduated
+	// take-profit / exit ladder for this holding. Nil when intraday data is
+	// unavailable.
+	Radar *radar.RadarSignal `json:"radar,omitempty"`
 }
 
 // ListPositions returns position analysis for all configured holdings.
@@ -303,6 +384,17 @@ func (h *Handler) ListPositions(w http.ResponseWriter, r *http.Request) {
 		candles := h.getCandles(p.Code)
 		sig := strategy.AnalyzePosition(quote, candles, p.Entry, cfg)
 
+		// Intraday momentum signal → drives the take-profit / exit ladder.
+		var rad *radar.RadarSignal
+		if set, ok := h.getIntraday(p.Code, quote); ok {
+			flow := orderflow.Analyze(h.flow.Series(p.Code))
+			rsig := radar.Analyze(quote, set, flow, radar.Config{
+				BuyScore:   h.cfg.Strategy.BuyScore,
+				WatchScore: h.cfg.Strategy.WatchScore,
+			})
+			rad = &rsig
+		}
+
 		out = append(out, positionRow{
 			Code:        p.Code,
 			Name:        p.Name,
@@ -327,6 +419,7 @@ func (h *Handler) ListPositions(w http.ResponseWriter, r *http.Request) {
 			LargeOrder:  sig.LargeOrder,
 			BidAskRatio: sig.BidAskRatio,
 			Reasons:     sig.Reasons,
+			Radar:       rad,
 		})
 	}
 
@@ -433,6 +526,16 @@ type scannerResponse struct {
 // ListScanner returns swing-trading analysis (1-4 week horizon) for all watchlist stocks,
 // sorted by score descending. Also returns sector rankings.
 func (h *Handler) ListScanner(w http.ResponseWriter, r *http.Request) {
+	// Serve the cached response when fresh — avoids refetching daily data / quotes.
+	h.scannerMu.Lock()
+	if h.scannerCache.fresh(scannerCacheTTL) {
+		data := h.scannerCache.data
+		h.scannerMu.Unlock()
+		writeJSON(w, data)
+		return
+	}
+	h.scannerMu.Unlock()
+
 	codes := h.codes()
 
 	switch {
@@ -537,11 +640,17 @@ func (h *Handler) ListScanner(w http.ResponseWriter, r *http.Request) {
 		return rows[i].Score > rows[j].Score
 	})
 
+	data, _ := json.Marshal(scannerResponse{Stocks: rows, Sectors: sectors})
+	h.scannerMu.Lock()
+	h.scannerCache = respCache{data: data, at: time.Now()}
+	h.scannerMu.Unlock()
+	writeJSON(w, data)
+}
+
+// writeJSON writes a pre-serialised JSON payload.
+func writeJSON(w http.ResponseWriter, data []byte) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(scannerResponse{
-		Stocks:  rows,
-		Sectors: sectors,
-	})
+	w.Write(data)
 }
 
 // ── Radar (intraday day-trading) ───────────────────────────────────────────────
@@ -549,6 +658,15 @@ func (h *Handler) ListScanner(w http.ResponseWriter, r *http.Request) {
 // ListRadar serves multi-timeframe (3m/5m/15m) intraday analysis plus order-flow
 // trend for every watchlist stock, sorted by score descending.
 func (h *Handler) ListRadar(w http.ResponseWriter, r *http.Request) {
+	h.radarMu.Lock()
+	if h.radarCache.fresh(radarCacheTTL) {
+		data := h.radarCache.data
+		h.radarMu.Unlock()
+		writeJSON(w, data)
+		return
+	}
+	h.radarMu.Unlock()
+
 	codes := h.codes()
 
 	switch {
@@ -592,6 +710,19 @@ func (h *Handler) ListRadar(w http.ResponseWriter, r *http.Request) {
 		return out[i].Score > out[j].Score
 	})
 
+	data, _ := json.Marshal(out)
+	h.radarMu.Lock()
+	h.radarCache = respCache{data: data, at: time.Now()}
+	h.radarMu.Unlock()
+	writeJSON(w, data)
+}
+
+// Metrics serves outbound fetch health (success rate, EOF count, avg response).
+func (h *Handler) Metrics(w http.ResponseWriter, r *http.Request) {
+	writeJSONValue(w, market.GlobalMetrics.Snapshot())
+}
+
+func writeJSONValue(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
+	json.NewEncoder(w).Encode(v)
 }

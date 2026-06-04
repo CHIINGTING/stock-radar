@@ -61,9 +61,20 @@ type IntradayProvider interface {
 // The two are merged on the minute timestamp (the live quote overrides Yahoo for
 // the same minute, otherwise appends), then aggregated to 3m / 5m / 15m.
 type YahooIntradayProvider struct {
+	// Client overrides the default Yahoo HTTP client (e.g. to force HTTP/1.1).
+	// nil falls back to the package default.
+	Client *http.Client
+
 	mu         sync.Mutex
-	discovered map[string]string    // code → "TW" | "TWO"
-	raw        map[string]rawEntry  // code → cached 1m bars
+	discovered map[string]string   // code → "TW" | "TWO"
+	raw        map[string]rawEntry // code → cached 1m bars
+}
+
+func (p *YahooIntradayProvider) client() *http.Client {
+	if p.Client != nil {
+		return p.Client
+	}
+	return yahooClient
 }
 
 type rawEntry struct {
@@ -170,32 +181,22 @@ func (p *YahooIntradayProvider) fetchSymbol1m(symbol string) ([]Candle, error) {
 		symbol,
 	)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	status, body, err := httpGet(p.client(), url, yahooHeaders())
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json,text/plain,*/*")
-	req.Header.Set("Referer", "https://finance.yahoo.com/")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
+		// Transient (EOF, timeout, exhausted retries) — keep market, retry later.
 		return nil, fmt.Errorf("fetch %s: %w", symbol, err)
 	}
-	defer resp.Body.Close()
 
 	switch {
-	case resp.StatusCode == http.StatusNotFound:
+	case status == http.StatusNotFound:
 		// Definitive: this symbol does not exist on this market.
 		return nil, fmt.Errorf("%s: %w", symbol, errSymbolNotFound)
-	case resp.StatusCode != http.StatusOK:
-		// Transient (429 rate-limit, 5xx, …) — retryable, do not switch market.
-		return nil, fmt.Errorf("yahoo returned %d for %s", resp.StatusCode, symbol)
+	case status != http.StatusOK:
+		return nil, fmt.Errorf("yahoo returned %d for %s", status, symbol)
 	}
 
 	var result yahooChartResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", symbol, err)
 	}
 	if len(result.Chart.Result) == 0 {

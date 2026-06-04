@@ -278,3 +278,11 @@ tr.radar-exit:hover { background: #ffe8e0; }
 .el-on-2 { background: #e07820; }
 .el-on-3 { background: #d04020; }
 .el-on-4 { background: #b00000; }
+
+/* ─── Portfolio momentum / exit ladder ────────────────────── */
+.pos-momentum { margin: 10px 0; padding: 10px; background: #fafbfd; border-radius: 6px; border: 1px solid #eef0f4; }
+.pos-mom-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+
+.momentum-box { background: #fafbfd; border: 1px solid #e2e4ea; border-radius: 6px; padding: 14px 16px; margin-bottom: 16px; }
+.mom-flags { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; margin-top: 8px; }
+.mom-flags span { color: #556; }

@@ -21,8 +21,19 @@ func YahooSymbol(code, market string) string {
 // Market discovery is cached: once a code is resolved to "TW" or "TWO" the
 // result is stored in memory so subsequent calls never retry the wrong suffix.
 type YahooHistoryProvider struct {
-	mu        sync.Mutex
+	// Client overrides the default Yahoo HTTP client (e.g. to force HTTP/1.1).
+	// nil falls back to the package default.
+	Client *http.Client
+
+	mu         sync.Mutex
 	discovered map[string]string // code → "TW" | "TWO"
+}
+
+func (p *YahooHistoryProvider) client() *http.Client {
+	if p.Client != nil {
+		return p.Client
+	}
+	return yahooClient
 }
 
 type yahooChartResp struct {
@@ -90,27 +101,16 @@ func (p *YahooHistoryProvider) fetch(symbol string) ([]Candle, error) {
 		symbol,
 	)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json,text/plain,*/*")
-	req.Header.Set("Referer", "https://finance.yahoo.com/")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	status, body, err := httpGet(p.client(), url, yahooHeaders())
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", symbol, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("yahoo returned %d for %s", resp.StatusCode, symbol)
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("yahoo returned %d for %s", status, symbol)
 	}
 
 	var result yahooChartResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", symbol, err)
 	}
 	if len(result.Chart.Result) == 0 {

@@ -7,9 +7,11 @@ import (
 )
 
 const (
-	QuoteTTL    = 60 * time.Second
-	maxWorkers  = 3
-	workerDelay = 500 * time.Millisecond
+	QuoteTTL = 60 * time.Second
+	// maxWorkers bounds concurrent realtime fetches. Kept low (3–5) to avoid
+	// bursts that trigger TWSE MIS EOFs; each request additionally self-jitters
+	// 100–300ms inside httpGet.
+	maxWorkers = 4
 )
 
 // Cache holds realtime quotes for all watched stocks.
@@ -96,11 +98,7 @@ func (c *Cache) Refresh(codes []string, provider RealtimeProvider) {
 	sem := make(chan struct{}, maxWorkers)
 	var wg sync.WaitGroup
 
-	for i, code := range codes {
-		if i > 0 {
-			// Rate-limit request starts: wait before launching the next goroutine.
-			time.Sleep(workerDelay)
-		}
+	for _, code := range codes {
 		sem <- struct{}{} // acquire worker slot (blocks when maxWorkers are in-flight)
 		wg.Add(1)
 		go func(code string) {
