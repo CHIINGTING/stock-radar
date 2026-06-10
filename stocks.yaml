@@ -33,70 +33,19 @@ yahoo:
 #     warn_start: "2026-05-28"
 #     warn_end: "2026-06-10"
 positions:
-  - code: "1504"
-    name: "東元"
-    entry: 75.6
-    shares: 1000
-  - code: "1605"
-    name: "華新"
-    market: "TW"
-    entry: 42.5
-    shares: 1000
-  - code: "4532"
-    name: "睿智"
-    market: "TW"
-    entry: 24.9
-    shares: 1000
-  - code: "2887"
-    name: "新光"
-    market: "TW"
-    entry: 29.35
-    shares: 1000
-  - code: "2820"
-    name: "華票"
-    market: "TW"
-    entry: 17.3
-    shares: 1000
-  - code: "2303"
-    name: "聯電"
-    market: "TW"
-    entry: 139.2
-    shares: 300
-  - code: "2356"
-    name: "英業達"
-    market: "TW"
-    entry: 82.9
-    shares: 100
+  - code: "00632R"
+    name: "0050反一"
+    entry: 10.63
+    shares: 4000
+
 
 # 自選觀察股
 watchlist:
-  - code: "2409"
-    name: "友達"
-  - code: "1504"
-    name: "東元"
-  - code: "2419"
-    name: "仲奇"
-  - code: "3015"
-    name: "全漢"
-  - code: "4532"
-    name: "瑞智"
-  - code: "2379"
-    name: "瑞昱"
-  - code: "1605"
-    name: "華新"
-  - code: "3481"
-    name: "群創"
-  - code: "5425"
-    name: "台半"
-  - code: "2887"
-    name: "台新新光金"
-  - code: "2324"
-    name: "仁寶"
-  - code: "3163"
-    name: "波若威"
-  - code: "1809"
-    name: "中釉"
-  - code: "8454"
-    name: "富邦媒"
-  - code: "1802"
-    name: "台玻"
+  - code: "00632R"
+    name: "0050反一"
+  - code: "6113"
+    name: "亞矽"
+  - code: "2545"
+    name: "皇翔"
+  - code: "8021"
+    name: "尖點"
